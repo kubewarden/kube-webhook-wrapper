@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"crypto/x509"
+	"encoding/pem"
 
 	"github.com/go-logr/logr"
 
@@ -16,8 +18,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
+ 	restclient "k8s.io/client-go/rest"
+ 	"k8s.io/client-go/tools/clientcmd"
 )
 
 type WebhookRegistrator struct {
@@ -29,10 +31,14 @@ type WebhookRegistrator struct {
 }
 type WebhookRegistrators = []WebhookRegistrator
 
-func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, webhookAdvertiseHost string, webhooks WebhookRegistrators) (ctrl.Manager, error) {
+func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, webhookAdvertiseHost string, webhooks WebhookRegistrators, caCertificate []byte, caPrivateKey []byte) (ctrl.Manager, error) {
 	var config *restclient.Config = nil
 	var clientset *kubernetes.Clientset = nil
-	caCertificate := ""
+	
+	if len(caCertificate) == 0 && len(caPrivateKey) == 0 {
+		logger.Error(fmt.Errorf("CA certificate and private key must be provided"), "failed to start manager")
+		os.Exit(1)
+	}
 
 	if developmentMode {
 		userHomeDir, err := os.UserHomeDir()
@@ -54,7 +60,7 @@ func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, 
 
 		// create certificates
 		certDir := ""
-		caCertificate, certDir, err = createCertificates(logger, []string{webhookAdvertiseHost})
+		caCertificate, certDir, err = createCertificates(logger, caCertificate, caPrivateKey, []string{webhookAdvertiseHost})
 		if err != nil {
 			logger.Error(err, "unable to create certificates")
 			os.Exit(1)
@@ -77,21 +83,34 @@ func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, 
 	return mgr, nil
 }
 
-func createCertificates(logger logr.Logger, subjectAlternativeNames []string) (string, string, error) {
+func createCertificates(logger logr.Logger, caCertificateBytes []byte, caPrivateKeyBytes []byte, subjectAlternativeNames []string) ([]byte, string, error) {
 	dir, err := ioutil.TempDir(os.TempDir(), "webhookwrapper-certs-*")
 	if err != nil {
 		logger.Error(err, "unable to create temporary directory")
 		os.Exit(1)
 	}
-	certificateAuthority, err := newCertificateAuthority("webhookwrapper")
-	if err != nil {
-		logger.Error(err, "unable to create certificate authority")
+	caCertificatePem, _ := pem.Decode(caCertificateBytes)
+	if caCertificatePem == nil || caCertificatePem.Type != "CERTIFICATE" {
+		logger.Error(err, "unable to parse certificate authority")
 		os.Exit(1)
 	}
-	certificate, certificateKey, err := certificateAuthority.createCertificate(
+	certificateAuthority, err := x509.ParseCertificate(caCertificatePem.Bytes)
+	if err != nil {
+		logger.Error(err, "unable to parse certificate authority")
+		os.Exit(1)
+	}
+	caPrivateKey, err := x509.ParsePKCS1PrivateKey(caPrivateKeyBytes)
+	if err != nil {
+		logger.Error(err, "unable to parse certificate authority private key")
+		os.Exit(1)
+	}
+
+	certificate, certificateKey, err := createCertificate(
 		"webhookwrapper",
 		[]string{},
 		subjectAlternativeNames,
+		certificateAuthority,
+		caPrivateKey,
 	)
 	if err != nil {
 		logger.Error(err, "unable to create certificate")
@@ -108,7 +127,7 @@ func createCertificates(logger logr.Logger, subjectAlternativeNames []string) (s
 	return certificate, dir, nil
 }
 
-func registerWebhooks(logger logr.Logger, mgr ctrl.Manager, webhookAdvertiseHost string, developmentMode bool, clientset *kubernetes.Clientset, caCertificate string, webhookRegistrators WebhookRegistrators, managerOptions ctrl.Options) error {
+func registerWebhooks(logger logr.Logger, mgr ctrl.Manager, webhookAdvertiseHost string, developmentMode bool, clientset *kubernetes.Clientset, caCertificate []byte, webhookRegistrators WebhookRegistrators, managerOptions ctrl.Options) error {
 	ctx := context.TODO()
 	for _, webhookRegistrator := range webhookRegistrators {
 		if err := webhookRegistrator.Registrator(mgr); err != nil {
@@ -145,7 +164,7 @@ func registerWebhooks(logger logr.Logger, mgr ctrl.Manager, webhookAdvertiseHost
 							Name: webhookRegistrator.Name,
 							ClientConfig: admissionregistrationv1.WebhookClientConfig{
 								URL:      &webhookEndpointString,
-								CABundle: []byte(caCertificate),
+								CABundle: caCertificate,
 							},
 							Rules:                   webhookRegistrator.RulesWithOperations,
 							FailurePolicy:           &failurePolicy,
@@ -172,7 +191,7 @@ func registerWebhooks(logger logr.Logger, mgr ctrl.Manager, webhookAdvertiseHost
 							Name: webhookRegistrator.Name,
 							ClientConfig: admissionregistrationv1.WebhookClientConfig{
 								URL:      &webhookEndpointString,
-								CABundle: []byte(caCertificate),
+								CABundle: caCertificate,
 							},
 							Rules:                   webhookRegistrator.RulesWithOperations,
 							FailurePolicy:           &failurePolicy,

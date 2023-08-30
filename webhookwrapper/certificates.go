@@ -66,10 +66,10 @@ func newCertificateAuthority(authorityName string) (*certificate, error) {
 	}, nil
 }
 
-func (certificate *certificate) createCertificate(commonName string, organization []string, extraSANs []string) (string, string, error) {
+func (certificate *certificate) createCertificate(commonName string, organization []string, extraSANs []string) ([]byte, string, error) {
 	serialNumber, err := rand.Int(rand.Reader, (&big.Int{}).Exp(big.NewInt(2), big.NewInt(159), nil))
 	if err != nil {
-		return "", "", err
+		return []byte{}, "", err
 	}
 	sansHosts := []string{"localhost"}
 	sansIps := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
@@ -91,7 +91,7 @@ func (certificate *certificate) createCertificate(commonName string, organizatio
 	}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
-		return "", "", err
+		return []byte{}, "", err
 	}
 	newCertificate := x509.Certificate{
 		SerialNumber: serialNumber,
@@ -114,7 +114,7 @@ func (certificate *certificate) createCertificate(commonName string, organizatio
 	}
 	certificateBytes, err := x509.CreateCertificate(rand.Reader, &newCertificate, certificate.certificate, &privateKey.PublicKey, certificate.privateKey)
 	if err != nil {
-		return "", "", err
+		return []byte{}, "", err
 	}
 	certificatePEM := new(bytes.Buffer)
 	err = pem.Encode(certificatePEM, &pem.Block{
@@ -122,7 +122,7 @@ func (certificate *certificate) createCertificate(commonName string, organizatio
 		Bytes: certificateBytes,
 	})
 	if err != nil {
-		return "", "", err
+		return []byte{}, "", err
 	}
 	certificatePrivKeyPEM := new(bytes.Buffer)
 	err = pem.Encode(certificatePrivKeyPEM, &pem.Block{
@@ -130,7 +130,76 @@ func (certificate *certificate) createCertificate(commonName string, organizatio
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	})
 	if err != nil {
-		return "", "", err
+		return []byte{}, "", err
 	}
-	return certificatePEM.String(), certificatePrivKeyPEM.String(), nil
+	return certificatePEM.Bytes(), certificatePrivKeyPEM.String(), nil
+}
+
+func createCertificate(commonName string, organization []string, extraSANs []string, caCertificate *x509.Certificate, caPrivateKey *rsa.PrivateKey) ([]byte, string, error) {
+	serialNumber, err := rand.Int(rand.Reader, (&big.Int{}).Exp(big.NewInt(2), big.NewInt(159), nil))
+	if err != nil {
+		return []byte{}, "", err
+	}
+	sansHosts := []string{"localhost"}
+	sansIps := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	knownSans := map[string]struct{}{
+		"localhost":               {},
+		"127.0.0.1":               {},
+		net.IPv6loopback.String(): {},
+	}
+	for _, extraSAN := range extraSANs {
+		if _, exists := knownSans[extraSAN]; exists {
+			continue
+		}
+		if ip := net.ParseIP(extraSAN); ip != nil {
+			sansIps = append(sansIps, ip)
+		} else {
+			sansHosts = append(sansHosts, extraSAN)
+		}
+		knownSans[extraSAN] = struct{}{}
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		return []byte{}, "", err
+	}
+	newCertificate := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:    commonName,
+			Organization:  organization,
+			Country:       []string{"Some Country"},
+			Province:      []string{"Some Province"},
+			Locality:      []string{"Some Locality"},
+			StreetAddress: []string{"Some StreetAddress"},
+			PostalCode:    []string{"Some PostalCode"},
+		},
+		DNSNames:     sansHosts,
+		IPAddresses:  sansIps,
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().AddDate(1, 0, 0),
+		SubjectKeyId: []byte{1, 2, 3, 4, 6},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	certificateBytes, err := x509.CreateCertificate(rand.Reader, &newCertificate, caCertificate, &privateKey.PublicKey, caPrivateKey)
+	if err != nil {
+		return []byte{}, "", err
+	}
+	certificatePEM := new(bytes.Buffer)
+	err = pem.Encode(certificatePEM, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certificateBytes,
+	})
+	if err != nil {
+		return []byte{}, "", err
+	}
+	certificatePrivKeyPEM := new(bytes.Buffer)
+	err = pem.Encode(certificatePrivKeyPEM, &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+	if err != nil {
+		return []byte{}, "", err
+	}
+	return certificatePEM.Bytes(), certificatePrivKeyPEM.String(), nil
 }

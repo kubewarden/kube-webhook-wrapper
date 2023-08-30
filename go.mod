@@ -1,4 +1,4 @@
-module github.com/ereslibre/kube-webhook-wrapper
+module github.com/kubewarden/kube-webhook-wrapper
 
 go 1.15
 
