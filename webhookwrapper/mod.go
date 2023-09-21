@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +34,7 @@ func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, 
 	var config *restclient.Config = nil
 	var clientset *kubernetes.Clientset = nil
 	caCertificate := ""
+	serverOptions := webhook.Options{}
 
 	if developmentMode {
 		userHomeDir, err := os.UserHomeDir()
@@ -60,7 +62,8 @@ func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, 
 			os.Exit(1)
 		}
 
-		options.CertDir = certDir
+		serverOptions.CertDir = certDir
+		options.WebhookServer = webhook.NewServer(serverOptions)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
@@ -69,7 +72,7 @@ func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, 
 		os.Exit(1)
 	}
 
-	if err := registerWebhooks(logger, mgr, webhookAdvertiseHost, developmentMode, clientset, caCertificate, webhooks, options); err != nil {
+	if err := registerWebhooks(logger, mgr, webhookAdvertiseHost, developmentMode, clientset, caCertificate, webhooks, serverOptions); err != nil {
 		logger.Error(err, "unable to register webhooks")
 		os.Exit(1)
 	}
@@ -108,7 +111,7 @@ func createCertificates(logger logr.Logger, subjectAlternativeNames []string) (s
 	return certificate, dir, nil
 }
 
-func registerWebhooks(logger logr.Logger, mgr ctrl.Manager, webhookAdvertiseHost string, developmentMode bool, clientset *kubernetes.Clientset, caCertificate string, webhookRegistrators WebhookRegistrators, managerOptions ctrl.Options) error {
+func registerWebhooks(logger logr.Logger, mgr ctrl.Manager, webhookAdvertiseHost string, developmentMode bool, clientset *kubernetes.Clientset, caCertificate string, webhookRegistrators WebhookRegistrators, managerOptions webhook.Options) error {
 	ctx := context.TODO()
 	for _, webhookRegistrator := range webhookRegistrators {
 		if err := webhookRegistrator.Registrator(mgr); err != nil {
