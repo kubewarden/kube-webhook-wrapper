@@ -63,6 +63,8 @@ func NewManager(options ctrl.Options, logger logr.Logger, developmentMode bool, 
 		}
 
 		serverOptions.CertDir = certDir
+		serverOptions.Host = webhookAdvertiseHost
+		serverOptions.Port = 9443
 		options.WebhookServer = webhook.NewServer(serverOptions)
 	}
 
